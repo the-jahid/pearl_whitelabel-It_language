@@ -28,7 +28,6 @@ import {
   Pause,
   Clock,
   PhoneCall,
-  Settings,
   AlertCircle,
   Download,
 } from "lucide-react"
@@ -239,11 +238,7 @@ const STORAGE_KEYS = {
   OUTBOUND_ID: "analytics_outbound_id",
 }
 
-const saveToLocalStorage = (key: string, value: string) => {
-  try {
-    if (typeof window !== "undefined" && window.localStorage) localStorage.setItem(key, value)
-  } catch { }
-}
+
 const getFromLocalStorage = (key: string): string | null => {
   try {
     if (typeof window !== "undefined" && window.localStorage) return localStorage.getItem(key)
