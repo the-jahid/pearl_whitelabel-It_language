@@ -15,7 +15,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import { Loader2, Edit, RefreshCw, Phone, X, ArrowRight, Filter, MessageSquare, ChevronDown } from "lucide-react"
+import { Loader2, Edit, RefreshCw, Phone, X, ArrowRight, Filter, MessageSquare, ChevronDown, AlertCircle } from "lucide-react"
 import * as ToastPrimitives from "@radix-ui/react-toast"
 import { cva, type VariantProps } from "class-variance-authority"
 import { cn } from "@/lib/utils"
@@ -192,8 +192,8 @@ const STORAGE_KEYS = {
   OUTBOUND_ID: "analytics_outbound_id",
   CAMPAIGN_ID: "analytics_campaign_id",
 }
-const saveToLocalStorage = (k: string, v: string) => { try { if (typeof window !== "undefined") localStorage.setItem(k, v) } catch {} }
-const getFromLocalStorage = (k: string) => { try { if (typeof window !== "undefined") return localStorage.getItem(k) } catch {} return null }
+const saveToLocalStorage = (k: string, v: string) => { try { if (typeof window !== "undefined") localStorage.setItem(k, v) } catch { } }
+const getFromLocalStorage = (k: string) => { try { if (typeof window !== "undefined") return localStorage.getItem(k) } catch { } return null }
 
 const getDefaultDateRange = () => {
   const to = new Date()
@@ -244,7 +244,7 @@ const SENTIMENT_COLOR: Record<number, string> = {
 const getSentimentColor = (s: number) => SENTIMENT_COLOR[s] ?? "text-gray-600"
 
 const TAG_COLOR_CLASSES = [
-  "bg-blue-500","bg-pink-400","bg-teal-500","bg-amber-400","bg-violet-500","bg-rose-500","bg-lime-500","bg-cyan-500","bg-indigo-500","bg-fuchsia-500",
+  "bg-blue-500", "bg-pink-400", "bg-teal-500", "bg-amber-400", "bg-violet-500", "bg-rose-500", "bg-lime-500", "bg-cyan-500", "bg-indigo-500", "bg-fuchsia-500",
 ] as const
 const hashString = (s: string) => { let h = 0; for (let i = 0; i < s.length; i++) h = (h << 5) - h + s.charCodeAt(i); return Math.abs(h) }
 const tagBg = (tag: string) => TAG_COLOR_CLASSES[hashString(tag) % TAG_COLOR_CLASSES.length]
@@ -345,7 +345,7 @@ const CallStatusSelector: React.FC<{ selectedStatuses: number[]; onStatusChange:
                 <span className="text-sm">Tutti gli stati</span>
               </div>
               <div className="border-t border-slate-100 my-2" />
-              {[3,4,5,6,7,8].map((v) => (
+              {[3, 4, 5, 6, 7, 8].map((v) => (
                 <div key={v} className="flex items-center space-x-2 p-2 hover:bg-slate-50 rounded cursor-pointer" onClick={() => handle(`status-${v}`)}>
                   <input type="radio" name="call-status-filter" className="rounded border-slate-300" checked={selectedStatuses.includes(v)} readOnly />
                   <span className="text-sm">{getStatusText(v)}</span>
@@ -379,7 +379,7 @@ const ConversationStatusSelector: React.FC<{ selectedStatuses: number[]; onStatu
                 <span className="text-sm">Tutti gli stati</span>
               </div>
               <div className="border-t border-slate-100 my-2" />
-              {[10,20,70,100,110,130,150,500].map((v) => (
+              {[10, 20, 70, 100, 110, 130, 150, 500].map((v) => (
                 <div key={v} className="flex items-center space-x-2 p-2 hover:bg-slate-50 rounded cursor-pointer" onClick={() => handle(`conversation-${v}`)}>
                   <input type="radio" name="conversation-status-filter" className="rounded border-slate-300" checked={selectedStatuses.includes(v)} readOnly />
                   <span className="text-sm">{getConversationStatusText(v)}</span>
@@ -413,7 +413,7 @@ const LimitSelector: React.FC<{ limit: number; onLimitChange: (limit: number) =>
           <div className="p-2">
             {predefined.map((n) => (
               <div key={n} className="flex items-center gap-2 p-2 hover:bg-slate-50 rounded cursor-pointer" onClick={() => pick(n)}>
-                <input type="radio" checked={limit === n} onChange={() => {}} className="w-4 h-4" /><span className="text-sm">{n}</span>
+                <input type="radio" checked={limit === n} onChange={() => { }} className="w-4 h-4" /><span className="text-sm">{n}</span>
               </div>
             ))}
             <div className="border-t border-slate-200 mt-2 pt-2">
@@ -461,7 +461,7 @@ export default function CallsPage() {
   const [activeRightTab, setActiveRightTab] = useState<"transcript" | "events">("transcript")
   const [availableTags, setAvailableTags] = useState<string[]>([])
   const [campaigns, setCampaigns] = useState<CampaignData[]>([])
-  const [, setSelectedCampaign] = useState<CampaignData | null>(null) // not used in UI; keep setter only
+  const [selectedCampaign, setSelectedCampaign] = useState<CampaignData | null>(null)
   const [campaignsLoading, setCampaignsLoading] = useState(false)
 
   const [filters, setFilters] = useState<CallsFilters>({
@@ -505,7 +505,11 @@ export default function CallsPage() {
   const fetchCalls = useCallback(async (custom?: Partial<CallsFilters>, showSuccessToast = false) => {
     const bearer = getFromLocalStorage(STORAGE_KEYS.BEARER_TOKEN)
     const outbound = getFromLocalStorage(STORAGE_KEYS.OUTBOUND_ID)
-    if (!bearer || !outbound) { setShowModal(true); return }
+    if (!bearer || !outbound) {
+      // No credentials - user needs to select a campaign in Panoramica
+      setIsConfigured(false)
+      return
+    }
 
     setCallsLoading(true)
     try {
@@ -569,20 +573,25 @@ export default function CallsPage() {
     try {
       const list = await apiGetCampaignsByEmail(email)
       setCampaigns(list)
-      if (list.length > 0) {
-        const savedId = getFromLocalStorage(STORAGE_KEYS.CAMPAIGN_ID)
-        const initial = savedId ? list.find((c) => c.id === savedId) : list[0]
-        if (initial) {
-          setSelectedCampaign(initial)
-          saveToLocalStorage(STORAGE_KEYS.CAMPAIGN_ID, initial.id)
-          saveToLocalStorage(STORAGE_KEYS.BEARER_TOKEN, initial.bearerToken)
-          saveToLocalStorage(STORAGE_KEYS.OUTBOUND_ID, initial.outboundId)
-          setIsConfigured(true)
-          await fetchCalls()
+
+      // Read credentials from localStorage (set by Overview page) instead of overwriting
+      const savedId = getFromLocalStorage(STORAGE_KEYS.CAMPAIGN_ID)
+      const savedBearer = getFromLocalStorage(STORAGE_KEYS.BEARER_TOKEN)
+      const savedOutbound = getFromLocalStorage(STORAGE_KEYS.OUTBOUND_ID)
+
+      if (savedId && savedBearer && savedOutbound) {
+        // Use the campaign set by Overview page
+        const campaign = list.find((c) => c.id === savedId)
+        if (campaign) {
+          setSelectedCampaign(campaign)
         }
-      } else if (showToast) {
+        setIsConfigured(true)
+        await fetchCalls()
+      } else if (list.length === 0 && showToast) {
         toast({ title: "Nessuna campagna", description: "Nessuna campagna trovata per questa email.", variant: "destructive" })
       }
+      // If no credentials in localStorage, don't auto-select - let user go to Panoramica
+
       return list
     } catch (e: unknown) {
       console.error(e)
@@ -621,14 +630,14 @@ export default function CallsPage() {
   const handleCallStatusChange = useCallback((value: string) => {
     const nf =
       value === "call-all" ? { ...filters, statuses: [], skip: 0 }
-      : { ...filters, statuses: [Number.parseInt(value.replace("status-", ""))], skip: 0 }
+        : { ...filters, statuses: [Number.parseInt(value.replace("status-", ""))], skip: 0 }
     setFilters(nf); fetchCalls(nf)
   }, [filters, fetchCalls])
 
   const handleConversationStatusChange = useCallback((value: string) => {
     const nf =
       value === "conversation-all" ? { ...filters, conversationStatuses: [], skip: 0 }
-      : { ...filters, conversationStatuses: [Number.parseInt(value.replace("conversation-", ""))], skip: 0 }
+        : { ...filters, conversationStatuses: [Number.parseInt(value.replace("conversation-", ""))], skip: 0 }
     setFilters(nf); fetchCalls(nf)
   }, [filters, fetchCalls])
 
@@ -668,6 +677,34 @@ export default function CallsPage() {
     else if (!campaignsLoading && campaigns.length === 0) setShowModal(true)
   }, [isLoaded, isConfigured, campaignsLoading, campaigns.length, fetchCalls])
 
+  // Listen for campaign changes from other pages (custom event)
+  useEffect(() => {
+    const handleCampaignChange = () => {
+      // Re-read credentials from localStorage
+      const bt = getFromLocalStorage(STORAGE_KEYS.BEARER_TOKEN)
+      const oid = getFromLocalStorage(STORAGE_KEYS.OUTBOUND_ID)
+      const cid = getFromLocalStorage(STORAGE_KEYS.CAMPAIGN_ID)
+
+      if (bt && oid) {
+        setIsConfigured(true)
+        if (cid && campaigns.length > 0) {
+          const found = campaigns.find(c => c.id === cid)
+          if (found) setSelectedCampaign(found)
+        }
+        fetchCalls()
+      } else {
+        setIsConfigured(false)
+        setSelectedCampaign(null)
+      }
+    }
+
+    window.addEventListener('campaignChanged', handleCampaignChange)
+
+    return () => {
+      window.removeEventListener('campaignChanged', handleCampaignChange)
+    }
+  }, [fetchCalls, campaigns])
+
   /* ------------------------------ Loading gates ----------------------------- */
 
   if (!isLoaded) {
@@ -706,7 +743,10 @@ export default function CallsPage() {
             <div className="flex flex-col gap-3 sm:gap-4">
               <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                 <div className="flex items-center gap-2 sm:gap-4">
-                  <h1 className="text-xl sm:text-2xl font-bold bg-gradient-to-r from-slate-800 to-slate-600 bg-clip-text text-transparent">Dashboard Chiamate</h1>
+                  <h1 className="text-xl sm:text-2xl font-bold bg-gradient-to-r from-slate-800 to-slate-600 bg-clip-text text-transparent">
+                    Dashboard Chiamate
+                    {selectedCampaign && <span className="ml-2 font-medium text-slate-500">- {selectedCampaign.campaignName}</span>}
+                  </h1>
                   {totalCalls > 0 && <Badge variant="secondary" className="text-xs sm:text-sm bg-blue-100 text-blue-800">{totalCalls.toLocaleString()} totali</Badge>}
                 </div>
                 <div className="flex w-full justify-center sm:flex-row sm:items-center sm:justify-end gap-2 sm:gap-3">
@@ -718,6 +758,19 @@ export default function CallsPage() {
               </div>
             </div>
           </div>
+
+          {/* Warning when no campaign selected */}
+          {!isConfigured && (
+            <div className="bg-amber-50 border-b border-amber-200 p-3 sm:p-4">
+              <div className="flex items-center">
+                <AlertCircle className="h-5 w-5 text-amber-600 mr-2" />
+                <p className="text-amber-800 font-medium">Nessuna campagna selezionata</p>
+              </div>
+              <p className="text-amber-700 text-sm mt-1">
+                Vai alla scheda Panoramica e seleziona una campagna per visualizzare le chiamate.
+              </p>
+            </div>
+          )}
 
           {/* Filters */}
           {isConfigured && (
@@ -956,8 +1009,8 @@ export default function CallsPage() {
                             const cls = isPearl
                               ? "px-3 sm:px-4 py-2 sm:py-3 rounded-lg shadow-sm border border-slate-200 bg-slate-50 text-slate-800"
                               : isClient
-                              ? "px-3 sm:px-4 py-2 sm:py-3 rounded-lg shadow-sm border border-blue-200 bg-blue-50 text-slate-800"
-                              : "px-3 sm:px-4 py-2 sm:py-3 rounded-lg shadow-sm border text-slate-800 bg-white"
+                                ? "px-3 sm:px-4 py-2 sm:py-3 rounded-lg shadow-sm border border-blue-200 bg-blue-50 text-slate-800"
+                                : "px-3 sm:px-4 py-2 sm:py-3 rounded-lg shadow-sm border text-slate-800 bg-white"
                             return (
                               <div key={i} className="mb-3 sm:mb-4">
                                 <div className="flex items-center justify-between mb-2"><span className="text-xs font-medium text-slate-600">{label}</span></div>

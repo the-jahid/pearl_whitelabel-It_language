@@ -50,21 +50,21 @@ interface UpstreamPayload {
 const toNumArray = (value: unknown): number[] =>
   Array.isArray(value)
     ? value
-        .map((v) => (typeof v === "number" ? v : Number(v)))
-        .filter((v) => Number.isFinite(v))
+      .map((v) => (typeof v === "number" ? v : Number(v)))
+      .filter((v) => Number.isFinite(v))
     : [];
 
 const toStrArray = (value: unknown): string[] =>
   Array.isArray(value)
     ? value
-        .map((v) =>
-          typeof v === "string"
-            ? v
-            : v == null
+      .map((v) =>
+        typeof v === "string"
+          ? v
+          : v == null
             ? ""
             : String(v),
-        )
-        .filter((s) => s.length > 0)
+      )
+      .filter((s) => s.length > 0)
     : [];
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
@@ -95,7 +95,8 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     }
 
     const base = requireEnv("NLPEARL_API_BASE_URL");
-    const url = `${base}/Outbound/${encodeURIComponent(outboundId)}/Calls`;
+    // Use v2 Pearl endpoint (pearlId = outboundId)
+    const url = `${base}/Pearl/${encodeURIComponent(outboundId)}/Calls`;
 
     const statusArr = toNumArray(statuses);
     const convArr = toNumArray(conversationStatuses);

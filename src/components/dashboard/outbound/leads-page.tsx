@@ -242,25 +242,25 @@ const STORAGE_KEYS = {
 const saveToLocalStorage = (key: string, value: string) => {
   try {
     if (typeof window !== "undefined" && window.localStorage) localStorage.setItem(key, value)
-  } catch {}
+  } catch { }
 }
 const getFromLocalStorage = (key: string): string | null => {
   try {
     if (typeof window !== "undefined" && window.localStorage) return localStorage.getItem(key)
-  } catch {}
+  } catch { }
   return null
 }
 const removeFromLocalStorage = (key: string) => {
   try {
     if (typeof window !== "undefined" && window.localStorage) localStorage.removeItem(key)
-  } catch {}
+  } catch { }
 }
 const clearLeadsStorage = () => {
   Object.values(STORAGE_KEYS).forEach((key) => removeFromLocalStorage(key))
 }
 
 /* --------------- APIs --------------- */
-const API_BASE_URL = "https://api.nlpearl.ai/v1" // calls + status + toggle
+const API_BASE_URL = process.env.NLPEARL_API_BASE_URL || "https://api.nlpearl.ai/v2" // calls + status + toggle
 
 /* --------------- Types --------------- */
 type Lead = {
@@ -290,7 +290,7 @@ export default function LeadsPage() {
   const [isAddLeadOpen, setIsAddLeadOpen] = useState(false)
   const [isBulkImportOpen, setIsBulkImportOpen] = useState(false)
   const [isBulkCallOpen, setIsBulkCallOpen] = useState(false)
-  const [isCredentialsOpen, setIsCredentialsOpen] = useState(false)
+  // Credentials state removed - credentials come from Panoramica page
   const [isLoading, setIsLoading] = useState(false)
   const [selectedLeads, setSelectedLeads] = useState<Set<string>>(new Set())
   const [selectAll, setSelectAll] = useState(false)
@@ -304,10 +304,7 @@ export default function LeadsPage() {
 
   const [, setIsCampaignChecking] = useState(false)
 
-  // Stato modale credenziali
-  const [bearerToken, setBearerToken] = useState("")
-  const [outboundId, setOutboundId] = useState("")
-  const [credentialsSubmitting, setCredentialsSubmitting] = useState(false)
+
 
   // Stato form
   const [formData, setFormData] = useState({ firstName: "", lastName: "", email: "", phoneNumber: "" })
@@ -335,7 +332,7 @@ export default function LeadsPage() {
     async (outId: string, token: string) => {
       setIsCampaignChecking(true)
       try {
-        const res = await fetch(`${API_BASE_URL}/Outbound/${outId}`, {
+        const res = await fetch(`${API_BASE_URL}/Pearl/${outId}`, {
           method: "GET",
           headers: {
             Authorization: `Bearer ${token.replace("Bearer ", "")}`,
@@ -372,8 +369,8 @@ export default function LeadsPage() {
     [toast],
   )
 
-  /* ======== Carica credenziali da localStorage ======== */
-  useEffect(() => {
+  /* ======== Carica credenziali da localStorage e ascolta cambiamenti ======== */
+  const loadCredentials = useCallback(() => {
     const savedBearerToken = getFromLocalStorage(STORAGE_KEYS.BEARER_TOKEN)
     const savedOutboundId = getFromLocalStorage(STORAGE_KEYS.OUTBOUND_ID)
     if (savedBearerToken && savedOutboundId) {
@@ -382,68 +379,29 @@ export default function LeadsPage() {
       // Stato attuale ON/OFF
       fetchOutboundActive(savedOutboundId, savedBearerToken)
     } else {
-      setIsCredentialsOpen(true)
+      setCampaignCreds(null)
+      // Don't open credentials modal - credentials come from Overview page campaign selection
     }
   }, [fetchOutboundActive])
 
-  /* ======== Invio credenziali ======== */
-  const handleCredentialsSubmit = async () => {
-    if (!bearerToken.trim() || !outboundId.trim()) {
-      toast({
-        title: "Credenziali mancanti",
-        description: "Inserisci sia il Bearer Token che l'Outbound ID.",
-        variant: "destructive",
-      })
-      return
+  // Load on mount
+  useEffect(() => {
+    loadCredentials()
+  }, [loadCredentials])
+
+  // Listen for campaign changes from other pages (custom event)
+  useEffect(() => {
+    const handleCampaignChange = () => {
+      loadCredentials()
     }
 
-    setCredentialsSubmitting(true)
-    try {
-      // Test rapido (può fallire sul numero: va bene, serve solo a validare il token)
-      const controller = new AbortController()
-      const timeoutId = setTimeout(() => controller.abort(), 15000)
-      const testResponse = await fetch(`${API_BASE_URL}/Outbound/${outboundId.trim()}/Call`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${bearerToken.trim().replace("Bearer ", "")}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          to: "+1234567890",
-          callData: { firstName: "Test", lastName: "User", email: "test@example.com" },
-        }),
-        signal: controller.signal,
-      })
-      clearTimeout(timeoutId)
+    // Listen for custom event dispatched when campaign changes
+    window.addEventListener('campaignChanged', handleCampaignChange)
 
-      if (testResponse.status === 401 || testResponse.status === 403) {
-        throw new Error("Credenziali non valide. Verifica Bearer Token e Outbound ID.")
-      }
-
-      saveToLocalStorage(STORAGE_KEYS.BEARER_TOKEN, bearerToken.trim())
-      saveToLocalStorage(STORAGE_KEYS.OUTBOUND_ID, outboundId.trim())
-      const creds = { bearerToken: bearerToken.trim(), outboundId: outboundId.trim() }
-      setCampaignCreds(creds)
-
-      setIsCredentialsOpen(false)
-      setBearerToken("")
-      setOutboundId("")
-      toast({ title: "Fatto", description: "Credenziali salvate correttamente!" })
-
-      // Leggi e mostra lo stato corrente
-      await fetchOutboundActive(creds.outboundId, creds.bearerToken)
-    } catch (error) {
-      const msg =
-        error instanceof Error
-          ? error.name === "AbortError"
-            ? "Richiesta scaduta. Riprova."
-            : error.message
-          : "Si è verificato un errore imprevisto."
-      toast({ title: "Errore", description: msg, variant: "destructive" })
-    } finally {
-      setCredentialsSubmitting(false)
+    return () => {
+      window.removeEventListener('campaignChanged', handleCampaignChange)
     }
-  }
+  }, [loadCredentials])
 
   /* ======== Gestione form lead ======== */
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -568,8 +526,8 @@ export default function LeadsPage() {
       const lines = bulkData.trim().split("\n")
       const startIndex =
         lines[0]?.toLowerCase().includes("first") ||
-        lines[0]?.toLowerCase().includes("name") ||
-        lines[0]?.toLowerCase().includes("email")
+          lines[0]?.toLowerCase().includes("name") ||
+          lines[0]?.toLowerCase().includes("email")
           ? 1
           : 0
 
@@ -610,14 +568,13 @@ export default function LeadsPage() {
     const savedOutboundId = getFromLocalStorage(STORAGE_KEYS.OUTBOUND_ID)
 
     if (!savedBearerToken || !savedOutboundId) {
-      toast({ title: "Credenziali richieste", description: "Configura prima le credenziali API.", variant: "destructive" })
-      setIsCredentialsOpen(true)
+      toast({ title: "Nessuna campagna selezionata", description: "Vai alla scheda Panoramica e seleziona una campagna.", variant: "destructive" })
       return false
     }
 
     setIsLoading(true)
     try {
-      const createResponse = await fetch(`${API_BASE_URL}/Outbound/${savedOutboundId}/Call`, {
+      const createResponse = await fetch(`${API_BASE_URL}/Pearl/${savedOutboundId}/Call`, {
         method: "POST",
         headers: {
           Authorization: `Bearer ${savedBearerToken.replace("Bearer ", "")}`,
@@ -633,17 +590,15 @@ export default function LeadsPage() {
         let errorMessage = "Impossibile iniziare la chiamata."
         switch (createResponse.status) {
           case 401:
-            errorMessage = "Bearer token non valido. Controlla le credenziali."
+            errorMessage = "Bearer token non valido. Vai alla scheda Panoramica e riseleziona la campagna."
             clearLeadsStorage()
-            setIsCredentialsOpen(true)
             break
           case 403:
             errorMessage = "Accesso negato. Controlla i permessi."
             break
           case 404:
-            errorMessage = "Outbound ID non trovato. Verifica la configurazione."
+            errorMessage = "Outbound ID non trovato. Vai alla scheda Panoramica e riseleziona la campagna."
             clearLeadsStorage()
-            setIsCredentialsOpen(true)
             break
           default:
             errorMessage = `Errore API: ${createResponse.status}`
@@ -709,8 +664,7 @@ export default function LeadsPage() {
 
   const startBulkCall = () => {
     if (!isConfigured) {
-      toast({ title: "Credenziali richieste", description: "Configura prima le credenziali API.", variant: "destructive" })
-      setIsCredentialsOpen(true)
+      toast({ title: "Nessuna campagna selezionata", description: "Vai alla scheda Panoramica e seleziona una campagna.", variant: "destructive" })
       return
     }
     if (selectedLeads.size === 0) {
@@ -846,10 +800,10 @@ export default function LeadsPage() {
           <div className="mt-4 p-4 bg-amber-50 border border-amber-200 rounded-lg">
             <div className="flex items-center">
               <AlertCircle className="h-5 w-5 text-amber-600 mr-2" />
-              <p className="text-amber-800 font-medium">Credenziali API richieste</p>
+              <p className="text-amber-800 font-medium">Nessuna campagna selezionata</p>
             </div>
             <p className="text-amber-700 text-sm mt-1">
-              Configura Bearer Token e Outbound ID per iniziare a effettuare chiamate.
+              Vai alla scheda Panoramica e seleziona una campagna per iniziare a effettuare chiamate.
             </p>
           </div>
         )}
@@ -1006,60 +960,6 @@ export default function LeadsPage() {
           </Button>
         </div>
       )}
-
-      {/* Modale Credenziali */}
-      <Dialog open={isCredentialsOpen} onOpenChange={setIsCredentialsOpen}>
-        <DialogContent className="sm:max-w-[500px]">
-          <DialogHeader>
-            <DialogTitle>{isConfigured ? "Aggiorna credenziali API" : "Configura credenziali API"}</DialogTitle>
-            <DialogDescription>
-              {isConfigured
-                ? "Aggiorna qui sotto il tuo Bearer Token e l'Outbound ID per continuare a chiamare."
-                : "Inserisci Bearer Token e Outbound ID per iniziare a effettuare chiamate."}
-            </DialogDescription>
-          </DialogHeader>
-          <div className="grid gap-4 py-4">
-            <div className="space-y-2">
-              <Label htmlFor="bearerToken">Bearer Token *</Label>
-              <Input
-                id="bearerToken"
-                value={bearerToken}
-                onChange={(e) => setBearerToken(e.target.value)}
-                placeholder="Inserisci il tuo Bearer Token"
-                disabled={credentialsSubmitting}
-                required
-              />
-              <p className="text-xs text-muted-foreground">È il Bearer Token per l&apos;autenticazione all&apos;API</p>
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="outboundId">Outbound ID *</Label>
-              <Input
-                id="outboundId"
-                value={outboundId}
-                onChange={(e) => setOutboundId(e.target.value)}
-                placeholder="Inserisci il tuo Outbound ID"
-                disabled={credentialsSubmitting}
-                required
-              />
-              <p className="text-xs text-muted-foreground">È l&apos;Outbound ID per effettuare le chiamate</p>
-            </div>
-            <div className="bg-blue-50 p-3 rounded-md">
-              <h4 className="font-medium text-blue-800 flex items-center">
-                <Settings className="h-4 w-4 mr-2" /> Serve aiuto?
-              </h4>
-              <p className="text-sm text-blue-700 mt-1">Contatta il supporto se ti serve assistenza nel reperire le credenziali API.</p>
-            </div>
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setIsCredentialsOpen(false)} disabled={credentialsSubmitting}>
-              Annulla
-            </Button>
-            <Button onClick={handleCredentialsSubmit} disabled={!bearerToken.trim() || !outboundId.trim() || credentialsSubmitting}>
-              {credentialsSubmitting ? "Verifica..." : isConfigured ? "Aggiorna credenziali" : "Salva credenziali"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
 
       {/* Modale Aggiungi Lead */}
       <Dialog open={isAddLeadOpen} onOpenChange={setIsAddLeadOpen}>
@@ -1218,7 +1118,7 @@ export default function LeadsPage() {
                       I tuoi dati devono essere in formato CSV con queste colonne:
                     </p>
                     <pre className="bg-muted p-3 sm:p-4 rounded-md text-xs overflow-x-auto">
-{`firstName,lastName,email,phoneNumber
+                      {`firstName,lastName,email,phoneNumber
 John,Doe,john@example.com,+1234567890
 Jane,Smith,jane@example.com,+0987654321`}
                     </pre>

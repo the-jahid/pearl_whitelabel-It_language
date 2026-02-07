@@ -17,6 +17,8 @@ import {
   Activity,
   Menu,
   CloverIcon as CloseIcon,
+  CheckCircle2,
+  AlertCircle,
 } from "lucide-react"
 import {
   LineChart,
@@ -239,6 +241,14 @@ interface CampaignData {
   updatedAt: string
 }
 
+interface CampaignStatus {
+  campaignId: string
+  campaignName: string
+  status: 'ok' | 'error' | 'checking'
+  isActive: boolean | null
+  errorMessage: string | null
+}
+
 interface AnalyticsData {
   callsStatusOverview: {
     totalCalls: number
@@ -306,26 +316,26 @@ const STORAGE_KEYS = {
 const saveToLocalStorage = (key: string, value: string) => {
   try {
     if (typeof window !== "undefined" && window.localStorage) localStorage.setItem(key, value)
-  } catch {}
+  } catch { }
 }
 const getFromLocalStorage = (key: string): string | null => {
   try {
     if (typeof window !== "undefined" && window.localStorage) return localStorage.getItem(key)
-  } catch {}
+  } catch { }
   return null
 }
 const removeFromLocalStorage = (key: string) => {
   try {
     if (typeof window !== "undefined" && window.localStorage) localStorage.removeItem(key)
-  } catch {}
+  } catch { }
 }
 const clearAnalyticsStorage = () => {
   Object.values(STORAGE_KEYS).forEach((key) => removeFromLocalStorage(key))
 }
 
 /* --------------- Costanti --------------- */
-const API_BASE_URL = "https://whitelabel-server.onrender.com"
-const ANALYTICS_API_BASE_URL = "https://api.nlpearl.ai/v1"
+const API_BASE_URL = process.env.WHITE_LABEL_API_BASE_URL || "https://whitelabel-server.onrender.com"
+const ANALYTICS_API_BASE_URL = process.env.NLPEARL_API_BASE_URL || "https://api.nlpearl.ai/v2"
 
 const OUR_CALL_RATE_PER_MIN = 0.4 // $ al minuto
 const OUR_SMS_RATE = 0.16 as const
@@ -335,7 +345,10 @@ const getDefaultDateRange = () => {
   const to = new Date()
   const from = new Date()
   from.setDate(from.getDate() - 30)
-  return { from: from.toISOString(), to: to.toISOString() }
+  // Strip milliseconds: YYYY-MM-DDTHH:mm:ssZ
+  const toStr = to.toISOString().split(".")[0] + "Z"
+  const fromStr = from.toISOString().split(".")[0] + "Z"
+  return { from: fromStr, to: toStr }
 }
 
 const SENTIMENT_COLORS = {
@@ -416,7 +429,9 @@ function buildRange(preset: PresetKey, customDays?: number) {
       break
     }
   }
-  return { from: from.toISOString(), to: to.toISOString() }
+  const toStr = to.toISOString().split(".")[0] + "Z"
+  const fromStr = from.toISOString().split(".")[0] + "Z"
+  return { from: fromStr, to: toStr }
 }
 
 /* === Dizionari etichette (traduzioni chiavi API) === */
@@ -458,6 +473,7 @@ const OverviewPage = () => {
 
   const [campaigns, setCampaigns] = useState<CampaignData[]>([])
   const [selectedCampaign, setSelectedCampaign] = useState<CampaignData | null>(null)
+  const [campaignStatuses, setCampaignStatuses] = useState<Map<string, CampaignStatus>>(new Map())
 
   // tre bucket (panoramica, analisi, cronologia)
   const [analyticsOverviewData, setAnalyticsOverviewData] = useState<AnalyticsData | null>(null)
@@ -486,12 +502,85 @@ const OverviewPage = () => {
   const [timePreset, setTimePreset] = useState<PresetKey>("thisMonth")
   const [timeCustomDays, setTimeCustomDays] = useState<string>("")
 
+  /* ---- Check status for all campaigns ---- */
+  const checkAllCampaignStatuses = useCallback(
+    async (campaignsToCheck: CampaignData[]) => {
+      const newStatuses = new Map<string, CampaignStatus>()
+
+      // Initialize all as checking
+      campaignsToCheck.forEach((campaign) => {
+        newStatuses.set(campaign.id, {
+          campaignId: campaign.id,
+          campaignName: campaign.campaignName,
+          status: 'checking',
+          isActive: null,
+          errorMessage: null,
+        })
+      })
+      setCampaignStatuses(new Map(newStatuses))
+
+      // Check each campaign in parallel
+      await Promise.all(
+        campaignsToCheck.map(async (campaign) => {
+          try {
+            const res = await fetch(`${ANALYTICS_API_BASE_URL}/Pearl/${campaign.outboundId}`, {
+              method: "GET",
+              headers: {
+                Authorization: `Bearer ${campaign.bearerToken.replace("Bearer ", "")}`,
+                "Content-Type": "application/json",
+              },
+            })
+
+            if (!res.ok) {
+              let errorMsg = `Errore HTTP ${res.status}`
+              if (res.status === 401) errorMsg = "Bearer token non valido."
+              if (res.status === 403) errorMsg = "Accesso negato."
+              if (res.status === 404) errorMsg = "Outbound ID non trovato."
+
+              newStatuses.set(campaign.id, {
+                campaignId: campaign.id,
+                campaignName: campaign.campaignName,
+                status: 'error',
+                isActive: null,
+                errorMessage: errorMsg,
+              })
+            } else {
+              const data = await res.json()
+              const status: number | undefined = data?.status
+              const isActive = status === 1
+
+              newStatuses.set(campaign.id, {
+                campaignId: campaign.id,
+                campaignName: campaign.campaignName,
+                status: 'ok',
+                isActive,
+                errorMessage: null,
+              })
+            }
+          } catch (err) {
+            const errorMsg = err instanceof Error ? err.message : "Errore di connessione."
+            newStatuses.set(campaign.id, {
+              campaignId: campaign.id,
+              campaignName: campaign.campaignName,
+              status: 'error',
+              isActive: null,
+              errorMessage: errorMsg,
+            })
+          }
+        })
+      )
+
+      setCampaignStatuses(new Map(newStatuses))
+    },
+    []
+  )
+
   /* ---- Verifica stato campagna ---- */
   const fetchOutboundActive = useCallback(
     async (outboundId: string, bearerToken: string) => {
       setIsCampaignChecking(true)
       try {
-        const res = await fetch(`${ANALYTICS_API_BASE_URL}/Outbound/${outboundId}`, {
+        const res = await fetch(`${ANALYTICS_API_BASE_URL}/Pearl/${outboundId}`, {
           method: "GET",
           headers: {
             Authorization: `Bearer ${bearerToken.replace("Bearer ", "")}`,
@@ -536,7 +625,7 @@ const OverviewPage = () => {
 
   /* ---- Endpoint toggle ---- */
   const toggleOutboundActive = useCallback(async (outId: string, token: string, isActive: boolean) => {
-    const response = await fetch(`${ANALYTICS_API_BASE_URL}/Outbound/${outId}/Active`, {
+    const response = await fetch(`${ANALYTICS_API_BASE_URL}/Pearl/${outId}/Active`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${token.replace("Bearer ", "")}`,
@@ -602,6 +691,7 @@ const OverviewPage = () => {
   // Timeline costi derivata dal dataset prestazioni
   const ourCostTimelinePerf = useMemo(() => {
     const src = analyticsPerfData
+    console.log(src)
     if (!src) return []
     const avgMap = new Map((src.callsAverageTimeLine || []).map((d) => [d.date, d.averageCallDuration]))
     const callMap = new Map((src.callsStatusTimeLine || []).map((d) => [d.date, d.totalCalls]))
@@ -621,18 +711,28 @@ const OverviewPage = () => {
   /* ---- Fetchers ---- */
   const getAnalytics = useCallback(
     async (
-      outboundId: string,
+      pearlId: string,
       bearerToken: string,
       range: { from: string; to: string },
       campaignIdToPersist?: string,
     ) => {
       const controller = new AbortController()
       const timeoutId = setTimeout(() => controller.abort(), 15000)
+
+      const cleanPearlId = pearlId.trim()
+      const cleanToken = bearerToken.trim().replace("Bearer ", "")
+
+      console.log("Fetching Analytics:", {
+        url: `${ANALYTICS_API_BASE_URL}/Pearl/${cleanPearlId}/Analytics`,
+        pearlId: cleanPearlId,
+        tokenLength: cleanToken.length
+      })
+
       try {
-        const response = await fetch(`${ANALYTICS_API_BASE_URL}/Outbound/${outboundId}/Analytics`, {
+        const response = await fetch(`${ANALYTICS_API_BASE_URL}/Pearl/${cleanPearlId}/Analytics`, {
           method: "POST",
           headers: {
-            Authorization: `Bearer ${bearerToken.replace("Bearer ", "")}`,
+            Authorization: `Bearer ${cleanToken}`,
             "Content-Type": "application/json",
           },
           body: JSON.stringify({ from: range.from, to: range.to }),
@@ -642,33 +742,39 @@ const OverviewPage = () => {
 
         if (!response.ok) {
           let errorMessage = "Impossibile recuperare i dati analitici."
-          switch (response.status) {
-            case 401:
-              errorMessage = "Bearer token non valido. Controlla le credenziali di autenticazione."
-              break
-            case 403:
-              errorMessage = "Accesso negato. Il bearer token potrebbe non avere i permessi."
-              break
-            case 404:
-              errorMessage = "Outbound ID non trovato. Verifica che l'ID sia corretto."
-              break
-            case 400:
-              errorMessage = "Richiesta non valida. Controlla Outbound ID e bearer token."
-              break
-            case 500:
-              errorMessage = "Errore del server. Riprova più tardi."
-              break
-            default:
-              errorMessage = `Errore API (${response.status}). Controlla le credenziali e riprova.`
-          }
+
+          try {
+            // Attempt to read error from server response
+            const errorBody = await response.text()
+            if (errorBody) {
+              try {
+                const errorJson = JSON.parse(errorBody)
+                if (errorJson.message) errorMessage = errorJson.message
+                else errorMessage = errorBody
+              } catch {
+                errorMessage = errorBody
+              }
+            }
+          } catch { }
+
+          if (response.status === 401) errorMessage = "Bearer token non valido (401)."
+          if (response.status === 403) errorMessage = "Accesso negato (403)."
+          if (response.status === 404) errorMessage = "Pearl ID non trovato (404)."
+          if (response.status === 400 && !errorMessage) errorMessage = "Richiesta non valida (400)."
+
           throw new Error(errorMessage)
         }
         const data: AnalyticsData = await response.json()
 
         // Persistenza credenziali
         saveToLocalStorage(STORAGE_KEYS.BEARER_TOKEN, bearerToken)
-        saveToLocalStorage(STORAGE_KEYS.OUTBOUND_ID, outboundId)
+        saveToLocalStorage(STORAGE_KEYS.OUTBOUND_ID, pearlId)
         if (campaignIdToPersist) saveToLocalStorage(STORAGE_KEYS.CAMPAIGN_ID, campaignIdToPersist)
+
+        // Notify other pages about the campaign change
+        if (typeof window !== "undefined") {
+          window.dispatchEvent(new CustomEvent('campaignChanged'))
+        }
 
         return data
       } catch (error) {
@@ -680,9 +786,9 @@ const OverviewPage = () => {
         toast({ title: "Errore analitiche", description: errorMessage, variant: "destructive" })
         if (
           error instanceof Error &&
-          (error.message.includes("Bearer token non valido") ||
-            error.message.includes("Accesso negato") ||
-            error.message.includes("Outbound ID non trovato"))
+          (error.message.includes("401") ||
+            error.message.includes("403") ||
+            error.message.includes("404"))
         ) {
           clearAnalyticsStorage()
         }
@@ -730,18 +836,26 @@ const OverviewPage = () => {
 
           setSelectedCampaign(campaignToSelect)
 
+          // Check status of all campaigns FIRST (before analytics loading)
+          checkAllCampaignStatuses(campaignsArray)
+
           // Popola tutti i bucket
           setAnalyticsLoading(true)
-          const initial = await getAnalytics(
-            campaignToSelect.outboundId,
-            campaignToSelect.bearerToken,
-            dateRange,
-            campaignToSelect.id,
-          )
-          setAnalyticsOverviewData(initial)
-          setAnalyticsPerfData(initial)
-          setAnalyticsTimelineData(initial)
-          setAnalyticsLoading(false)
+          try {
+            const initial = await getAnalytics(
+              campaignToSelect.outboundId,
+              campaignToSelect.bearerToken,
+              dateRange,
+              campaignToSelect.id,
+            )
+            setAnalyticsOverviewData(initial)
+            setAnalyticsPerfData(initial)
+            setAnalyticsTimelineData(initial)
+          } catch {
+            // Error already handled in getAnalytics via toast
+          } finally {
+            setAnalyticsLoading(false)
+          }
 
           fetchOutboundActive(campaignToSelect.outboundId, campaignToSelect.bearerToken)
         } else {
@@ -764,24 +878,57 @@ const OverviewPage = () => {
         if (showLoader) setLoading(false)
       }
     },
-    [toast, fetchOutboundActive, getAnalytics, dateRange],
+    [toast, fetchOutboundActive, getAnalytics, dateRange, checkAllCampaignStatuses],
   )
 
   const handleCampaignChange = useCallback(
     async (campaignId: string) => {
-      const campaign = campaigns.find((c) => c.id === campaignId)
+      // First try to find in campaigns array
+      let campaign = campaigns.find((c) => c.id === campaignId)
+
+      // If not found, try to create from campaignStatuses (fallback)
+      if (!campaign) {
+        const status = campaignStatuses.get(campaignId)
+        if (status) {
+          campaign = {
+            id: status.campaignId,
+            campaignName: status.campaignName,
+            outboundId: '',
+            bearerToken: '',
+            userId: '',
+            createdAt: '',
+            updatedAt: '',
+          }
+        }
+      }
+
       if (campaign) {
         setSelectedCampaign(campaign)
-        setAnalyticsLoading(true)
-        const initial = await getAnalytics(campaign.outboundId, campaign.bearerToken, dateRange, campaign.id)
-        setAnalyticsOverviewData(initial)
-        setAnalyticsPerfData(initial)
-        setAnalyticsTimelineData(initial)
-        setAnalyticsLoading(false)
-        fetchOutboundActive(campaign.outboundId, campaign.bearerToken)
+
+        // Only try to load analytics if we have valid outboundId and bearerToken
+        if (campaign.outboundId && campaign.bearerToken) {
+          setAnalyticsLoading(true)
+          try {
+            const initial = await getAnalytics(campaign.outboundId, campaign.bearerToken, dateRange, campaign.id)
+            setAnalyticsOverviewData(initial)
+            setAnalyticsPerfData(initial)
+            setAnalyticsTimelineData(initial)
+            fetchOutboundActive(campaign.outboundId, campaign.bearerToken)
+          } catch {
+            // Error already handled in getAnalytics via toast
+          } finally {
+            setAnalyticsLoading(false)
+          }
+        } else {
+          // Clear analytics data when switching to a campaign with no credentials
+          setAnalyticsOverviewData(null)
+          setAnalyticsPerfData(null)
+          setAnalyticsTimelineData(null)
+          setAnalyticsLoading(false)
+        }
       }
     },
-    [campaigns, fetchOutboundActive, getAnalytics, dateRange],
+    [campaigns, campaignStatuses, fetchOutboundActive, getAnalytics, dateRange],
   )
 
   const handleRefresh = useCallback(async () => {
@@ -792,16 +939,21 @@ const OverviewPage = () => {
     if (campaignsData && campaignsData.length > 0 && selectedCampaign) {
       const updatedCampaign = campaignsData.find((c) => c.id === selectedCampaign.id) || campaignsData[0]
       setAnalyticsLoading(true)
-      const initial = await getAnalytics(
-        updatedCampaign.outboundId,
-        updatedCampaign.bearerToken,
-        dateRange,
-        updatedCampaign.id,
-      )
-      setAnalyticsOverviewData(initial)
-      setAnalyticsPerfData(initial)
-      setAnalyticsTimelineData(initial)
-      setAnalyticsLoading(false)
+      try {
+        const initial = await getAnalytics(
+          updatedCampaign.outboundId,
+          updatedCampaign.bearerToken,
+          dateRange,
+          updatedCampaign.id,
+        )
+        setAnalyticsOverviewData(initial)
+        setAnalyticsPerfData(initial)
+        setAnalyticsTimelineData(initial)
+      } catch {
+        // Error already handled in getAnalytics via toast
+      } finally {
+        setAnalyticsLoading(false)
+      }
       await fetchOutboundActive(updatedCampaign.outboundId, updatedCampaign.bearerToken)
     }
     setRefreshing(false)
@@ -831,19 +983,24 @@ const OverviewPage = () => {
 
         if (matchingCampaign && (!selectedCampaign || selectedCampaign.id !== matchingCampaign.id)) {
           setSelectedCampaign(matchingCampaign)
-          ;(async () => {
-            setAnalyticsLoading(true)
-            const initial = await getAnalytics(
-              matchingCampaign.outboundId,
-              matchingCampaign.bearerToken,
-              dateRange,
-              matchingCampaign.id,
-            )
-            setAnalyticsOverviewData(initial)
-            setAnalyticsPerfData(initial)
-            setAnalyticsTimelineData(initial)
-            setAnalyticsLoading(false)
-          })()
+            ; (async () => {
+              setAnalyticsLoading(true)
+              try {
+                const initial = await getAnalytics(
+                  matchingCampaign.outboundId,
+                  matchingCampaign.bearerToken,
+                  dateRange,
+                  matchingCampaign.id,
+                )
+                setAnalyticsOverviewData(initial)
+                setAnalyticsPerfData(initial)
+                setAnalyticsTimelineData(initial)
+              } catch {
+                // Error already handled in getAnalytics via toast
+              } finally {
+                setAnalyticsLoading(false)
+              }
+            })()
           fetchOutboundActive(matchingCampaign.outboundId, matchingCampaign.bearerToken)
         }
       }
@@ -853,6 +1010,25 @@ const OverviewPage = () => {
   useEffect(() => {
     if (!selectedCampaign) setIsCampaignOn(null)
   }, [selectedCampaign])
+
+  // Auto-select first campaign from campaignStatuses when campaigns array is empty
+  useEffect(() => {
+    if (!selectedCampaign && campaigns.length === 0 && campaignStatuses.size > 0) {
+      const firstStatus = Array.from(campaignStatuses.values())[0]
+      if (firstStatus) {
+        // Create a minimal campaign object from status data
+        setSelectedCampaign({
+          id: firstStatus.campaignId,
+          campaignName: firstStatus.campaignName,
+          outboundId: '',
+          bearerToken: '',
+          userId: '',
+          createdAt: '',
+          updatedAt: '',
+        })
+      }
+    }
+  }, [selectedCampaign, campaigns.length, campaignStatuses])
 
   const clearStoredCredentials = useCallback(() => {
     clearAnalyticsStorage()
@@ -1011,32 +1187,110 @@ const OverviewPage = () => {
 
   /* ---- Renderer contenuto ---- */
   const renderContent = () => {
-    if (!analyticsOverviewData && activeSection === "overview") {
+    // Get the selected campaign's status
+    const selectedStatus = selectedCampaign ? campaignStatuses.get(selectedCampaign.id) : null
+    const hasError = selectedStatus?.status === 'error'
+
+    const CampaignStatusSection = () => {
+      if (!selectedCampaign) {
+        return (
+          <Card className="min-w-0">
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base lg:text-lg flex items-center gap-2">
+                <Activity className="h-5 w-5" />
+                Stato Campagna
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <p className="text-sm text-gray-500">Seleziona una campagna.</p>
+            </CardContent>
+          </Card>
+        )
+      }
+
       return (
-        <Card>
-          <CardContent className="p-6 text-center">
-            <p className="text-gray-500 mb-4">Nessun dato analitico disponibile.</p>
-            <Button
-              onClick={async () => {
-                if (selectedCampaign) {
-                  setAnalyticsLoading(true)
-                  const d = await getAnalytics(
-                    selectedCampaign.outboundId,
-                    selectedCampaign.bearerToken,
-                    dateRange,
-                    selectedCampaign.id,
-                  )
-                  setAnalyticsOverviewData(d)
-                  setAnalyticsPerfData(d)
-                  setAnalyticsTimelineData(d)
-                  setAnalyticsLoading(false)
-                }
-              }}
+        <Card className={cn("min-w-0", hasError && "border-red-300")}>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base lg:text-lg flex items-center gap-2">
+              <Activity className="h-5 w-5" />
+              Stato Campagna
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div
+              className={cn(
+                "p-3 rounded-lg border transition-colors",
+                (!selectedStatus || selectedStatus.status === 'checking') && "bg-gray-50 border-gray-200",
+                selectedStatus?.status === 'ok' && "bg-green-50 border-green-200",
+                selectedStatus?.status === 'error' && "bg-red-50 border-red-300"
+              )}
             >
-              Carica analitiche
-            </Button>
+              <div className="flex items-start gap-2">
+                {(!selectedStatus || selectedStatus.status === 'checking') && (
+                  <Loader2 className="h-5 w-5 text-gray-400 animate-spin shrink-0 mt-0.5" />
+                )}
+                {selectedStatus?.status === 'ok' && (
+                  <CheckCircle2 className="h-5 w-5 text-green-600 shrink-0 mt-0.5" />
+                )}
+                {selectedStatus?.status === 'error' && (
+                  <AlertCircle className="h-5 w-5 text-red-600 shrink-0 mt-0.5" />
+                )}
+                <div className="min-w-0 flex-1">
+                  <p className="font-medium text-sm truncate">
+                    {selectedCampaign.campaignName}
+                  </p>
+                  {(!selectedStatus || selectedStatus.status === 'checking') && (
+                    <p className="text-xs text-gray-500">Verifica in corso...</p>
+                  )}
+                  {selectedStatus?.status === 'ok' && (
+                    <p className="text-xs text-green-700">
+                      {selectedStatus.isActive ? "Attiva" : "Inattiva"}
+                    </p>
+                  )}
+                  {selectedStatus?.status === 'error' && (
+                    <p className="text-xs text-red-700">
+                      {selectedStatus.errorMessage}
+                    </p>
+                  )}
+                </div>
+              </div>
+            </div>
           </CardContent>
         </Card>
+      )
+    }
+
+    if (!analyticsOverviewData && activeSection === "overview") {
+      return (
+        <div className="space-y-4 lg:space-y-6">
+          {/* Always show campaign status section */}
+          <CampaignStatusSection />
+
+          <Card>
+            <CardContent className="p-6 text-center">
+              <p className="text-gray-500 mb-4">Nessun dato analitico disponibile.</p>
+              <Button
+                onClick={async () => {
+                  if (selectedCampaign) {
+                    setAnalyticsLoading(true)
+                    const d = await getAnalytics(
+                      selectedCampaign.outboundId,
+                      selectedCampaign.bearerToken,
+                      dateRange,
+                      selectedCampaign.id,
+                    )
+                    setAnalyticsOverviewData(d)
+                    setAnalyticsPerfData(d)
+                    setAnalyticsTimelineData(d)
+                    setAnalyticsLoading(false)
+                  }
+                }}
+              >
+                Carica analitiche
+              </Button>
+            </CardContent>
+          </Card>
+        </div>
       )
     }
 
@@ -1045,6 +1299,9 @@ const OverviewPage = () => {
         const data = analyticsOverviewData!
         return (
           <div className="space-y-4 lg:space-y-6">
+            {/* Campaign Status Section */}
+            <CampaignStatusSection />
+
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 lg:gap-4">
               <Card className="min-w-0">
                 <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
@@ -1572,76 +1829,89 @@ const OverviewPage = () => {
           </span>
 
           {/* Selettore campagna */}
-          {campaigns.length > 0 ? (
-            <div className="p-3 sm:p-4 lg:p-6 border-b border-gray-200">
-              <div className="space-y-3 sm:space-y-4">
-                <div>
-                  <label className="block text-xs sm:text-sm font-medium text-gray-700 mb-2">Campagna</label>
-                  <Select value={selectedCampaign?.id || ""} onValueChange={handleCampaignChange}>
-                    <SelectTrigger className="w-full text-xs sm:text-sm">
-                      <SelectValue placeholder="Seleziona campagna" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {campaigns.map((campaign) => (
-                        <SelectItem key={campaign.id} value={campaign.id} className="text-xs sm:text-sm">
-                          {campaign.campaignName}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
+          {(() => {
+            // Fall back to campaignStatuses if campaigns array is empty
+            const campaignsToShow = campaigns.length > 0 ? campaigns : Array.from(campaignStatuses.values()).map(s => ({
+              id: s.campaignId,
+              campaignName: s.campaignName,
+              outboundId: '',
+              bearerToken: '',
+              userId: '',
+              createdAt: '',
+              updatedAt: '',
+            }))
 
-                {/* Toggle campagna */}
-                <div className="flex items-center justify-between">
-                  <span className="text-xs sm:text-sm font-medium text-gray-700">Stato campagna</span>
-                  <button
-                    onClick={handleCampaign}
-                    disabled={isCampaignChecking}
-                    className={cn(
-                      "relative inline-flex h-7 w-14 sm:h-8 sm:w-16 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:opacity-50",
-                      isCampaignOn === null ? "bg-neutral-300" : isCampaignOn ? "bg-green-100" : "bg-red-100",
-                    )}
-                  >
-                    <div
+            return campaignsToShow.length > 0 ? (
+              <div className="p-3 sm:p-4 lg:p-6 border-b border-gray-200">
+                <div className="space-y-3 sm:space-y-4">
+                  <div>
+                    <label className="block text-xs sm:text-sm font-medium text-gray-700 mb-2">Campagna</label>
+                    <Select value={selectedCampaign?.id || ""} onValueChange={handleCampaignChange}>
+                      <SelectTrigger className="w-full text-xs sm:text-sm">
+                        <SelectValue placeholder="Seleziona campagna" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {campaignsToShow.map((campaign) => (
+                          <SelectItem key={campaign.id} value={campaign.id} className="text-xs sm:text-sm">
+                            {campaign.campaignName}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  {/* Toggle campagna */}
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs sm:text-sm font-medium text-gray-700">Stato campagna</span>
+                    <button
+                      onClick={handleCampaign}
+                      disabled={isCampaignChecking}
                       className={cn(
-                        "absolute top-0.5 bottom-0.5 left-0.5 w-[calc(50%-4px)] rounded-full transition-transform duration-200 shadow",
-                        isCampaignOn === null ? "bg-neutral-400/80" : isCampaignOn ? "bg-green-500" : "bg-red-500",
-                        isCampaignOn ? "translate-x-0" : "translate-x-[calc(100%+4px)]",
-                        "z-0",
+                        "relative inline-flex h-7 w-14 sm:h-8 sm:w-16 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:opacity-50",
+                        isCampaignOn === null ? "bg-neutral-300" : isCampaignOn ? "bg-green-100" : "bg-red-100",
                       )}
-                    />
-                    <div className="relative z-10 grid w-full grid-cols-2 text-xs font-medium">
-                      <span
+                    >
+                      <div
                         className={cn(
-                          "text-center transition-colors",
-                          isCampaignOn ? "text-white" : "text-neutral-600",
+                          "absolute top-0.5 bottom-0.5 left-0.5 w-[calc(50%-4px)] rounded-full transition-transform duration-200 shadow",
+                          isCampaignOn === null ? "bg-neutral-400/80" : isCampaignOn ? "bg-green-500" : "bg-red-500",
+                          isCampaignOn ? "translate-x-0" : "translate-x-[calc(100%+4px)]",
+                          "z-0",
                         )}
-                      >
-                        {isCampaignChecking ? "…" : "On"}
-                      </span>
-                      <span
-                        className={cn(
-                          "text-center transition-colors",
-                          !isCampaignOn ? "text-white" : "text-neutral-600",
-                        )}
-                      >
-                        {isCampaignChecking ? "…" : "Off"}
-                      </span>
-                    </div>
-                  </button>
+                      />
+                      <div className="relative z-10 grid w-full grid-cols-2 text-xs font-medium">
+                        <span
+                          className={cn(
+                            "text-center transition-colors",
+                            isCampaignOn ? "text-white" : "text-neutral-600",
+                          )}
+                        >
+                          {isCampaignChecking ? "…" : "On"}
+                        </span>
+                        <span
+                          className={cn(
+                            "text-center transition-colors",
+                            !isCampaignOn ? "text-white" : "text-neutral-600",
+                          )}
+                        >
+                          {isCampaignChecking ? "…" : "Off"}
+                        </span>
+                      </div>
+                    </button>
+                  </div>
                 </div>
               </div>
-            </div>
-          ) : (
-            <div className="p-3 sm:p-4 lg:p-6 border-b border-gray-200">
-              <div className="text-center py-4">
-                <p className="text-xs sm:text-sm text-gray-500 mb-2">Nessuna campagna disponibile</p>
-                <p className="text-xs text-gray-400">
-                  {loading ? "Caricamento campagne..." : "Controlla la configurazione della tua email"}
-                </p>
+            ) : (
+              <div className="p-3 sm:p-4 lg:p-6 border-b border-gray-200">
+                <div className="text-center py-4">
+                  <p className="text-xs sm:text-sm text-gray-500 mb-2">Nessuna campagna disponibile</p>
+                  <p className="text-xs text-gray-400">
+                    {loading ? "Caricamento campagne..." : "Controlla la configurazione della tua email"}
+                  </p>
+                </div>
               </div>
-            </div>
-          )}
+            )
+          })()}
 
           {/* Navigazione */}
           <nav className="flex-1 p-3 sm:p-4 overflow-y-auto">
@@ -1710,7 +1980,88 @@ const OverviewPage = () => {
           {/* Area contenuti */}
           <div className="flex-1 overflow-y-auto touch-pan-y" style={{ WebkitOverflowScrolling: "touch" }}>
             <div className="p-3 sm:p-4 lg:p-6 max-w-full">
-              {analyticsLoading ? (
+              {analyticsLoading && activeSection === "overview" ? (
+                <div className="space-y-4 lg:space-y-6">
+                  {/* Show selected campaign status during loading */}
+                  {(() => {
+                    const selectedStatus = selectedCampaign ? campaignStatuses.get(selectedCampaign.id) : null
+                    const hasError = selectedStatus?.status === 'error'
+
+                    if (!selectedCampaign) {
+                      return (
+                        <Card className="min-w-0">
+                          <CardHeader className="pb-3">
+                            <CardTitle className="text-base lg:text-lg flex items-center gap-2">
+                              <Activity className="h-5 w-5" />
+                              Stato Campagna
+                            </CardTitle>
+                          </CardHeader>
+                          <CardContent>
+                            <p className="text-sm text-gray-500">Seleziona una campagna.</p>
+                          </CardContent>
+                        </Card>
+                      )
+                    }
+
+                    return (
+                      <Card className={cn("min-w-0", hasError && "border-red-300")}>
+                        <CardHeader className="pb-3">
+                          <CardTitle className="text-base lg:text-lg flex items-center gap-2">
+                            <Activity className="h-5 w-5" />
+                            Stato Campagna
+                          </CardTitle>
+                        </CardHeader>
+                        <CardContent>
+                          <div
+                            className={cn(
+                              "p-3 rounded-lg border transition-colors",
+                              (!selectedStatus || selectedStatus.status === 'checking') && "bg-gray-50 border-gray-200",
+                              selectedStatus?.status === 'ok' && "bg-green-50 border-green-200",
+                              selectedStatus?.status === 'error' && "bg-red-50 border-red-300"
+                            )}
+                          >
+                            <div className="flex items-start gap-2">
+                              {(!selectedStatus || selectedStatus.status === 'checking') && (
+                                <Loader2 className="h-5 w-5 text-gray-400 animate-spin shrink-0 mt-0.5" />
+                              )}
+                              {selectedStatus?.status === 'ok' && (
+                                <CheckCircle2 className="h-5 w-5 text-green-600 shrink-0 mt-0.5" />
+                              )}
+                              {selectedStatus?.status === 'error' && (
+                                <AlertCircle className="h-5 w-5 text-red-600 shrink-0 mt-0.5" />
+                              )}
+                              <div className="min-w-0 flex-1">
+                                <p className="font-medium text-sm truncate">
+                                  {selectedCampaign.campaignName}
+                                </p>
+                                {(!selectedStatus || selectedStatus.status === 'checking') && (
+                                  <p className="text-xs text-gray-500">Verifica in corso...</p>
+                                )}
+                                {selectedStatus?.status === 'ok' && (
+                                  <p className="text-xs text-green-700">
+                                    {selectedStatus.isActive ? "Attiva" : "Inattiva"}
+                                  </p>
+                                )}
+                                {selectedStatus?.status === 'error' && (
+                                  <p className="text-xs text-red-700">
+                                    {selectedStatus.errorMessage}
+                                  </p>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        </CardContent>
+                      </Card>
+                    )
+                  })()}
+
+                  {/* Loading indicator for analytics */}
+                  <div className="flex items-center justify-center py-12">
+                    <Loader2 className="h-6 w-6 animate-spin mr-2" />
+                    <span className="text-sm lg:text-base">Caricamento dati analitici...</span>
+                  </div>
+                </div>
+              ) : analyticsLoading ? (
                 <div className="flex items-center justify-center py-12">
                   <Loader2 className="h-6 w-6 animate-spin mr-2" />
                   <span className="text-sm lg:text-base">Caricamento dati analitici...</span>
